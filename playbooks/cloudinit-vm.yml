@@ -1,0 +1,202 @@
+---
+- name: Create Ubuntu Cloud-Init Template
+  hosts: proxmox
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Process VM Creation via Cloud-Init
+      block:
+
+        # ---------- PRE-FLIGHT CHECKS ----------
+
+        - name: Check if SSH public key file exists
+          ansible.builtin.stat:
+            path: "{{ ci_ssh_pubkey_path }}"
+          register: ssh_pubkey_file
+
+        - name: Assert SSH public key exists
+          ansible.builtin.assert:
+            that:
+              - ssh_pubkey_file.stat.exists
+            fail_msg: "SSH public key tidak ditemukan di {{ ci_ssh_pubkey_path }}."
+
+        - name: Check if preferred VMID is available
+          ansible.builtin.command:
+            cmd: "qm status {{ vmid }}"
+          register: vm_status
+          failed_when: false
+          changed_when: false
+
+        - name: Get next available VMID
+          ansible.builtin.command:
+            cmd: pvesh get /cluster/nextid
+          register: next_free_vmid
+          when: vm_status.rc == 0
+          changed_when: false
+
+        - name: Assign available VMID
+          ansible.builtin.set_fact:
+            vmid: "{{ next_free_vmid.stdout | trim }}"
+          when:
+            - vm_status.rc == 0
+            - next_free_vmid.stdout is defined
+
+        # ---------- DYNAMIC IP ----------
+
+        - name: Find available IP
+          ansible.builtin.shell: |
+            for host in $(seq {{ ip_start_host }} 254); do
+              ip="{{ subnet_base }}.$host"
+              if ! ping -c1 -W1 "$ip" >/dev/null 2>&1; then
+                echo "$ip"
+                exit 0
+              fi
+            done
+            exit 1
+          register: free_ip_check
+          changed_when: false
+
+        - name: Configure assigned IP
+          ansible.builtin.set_fact:
+            assigned_ip: "{{ free_ip_check.stdout | trim }}"
+            ci_ipconfig: "ip={{ free_ip_check.stdout | trim }}/{{ netmask_cidr }},gw={{ gateway_ip }}"
+
+        - name: Show deployment information
+          ansible.builtin.debug:
+            msg:
+              - "VMID : {{ vmid }}"
+              - "IP   : {{ assigned_ip }}"
+
+        # ---------- CLOUD IMAGE ----------
+
+        - name: Check cloud image
+          ansible.builtin.stat:
+            path: "{{ cloud_image_path }}"
+          register: cloud_image
+
+        - name: Download cloud image
+          ansible.builtin.get_url:
+            url: "{{ cloud_image_url }}"
+            dest: "{{ cloud_image_path }}"
+            mode: "0644"
+          when: not cloud_image.stat.exists
+
+        - name: Verify cloud image
+          ansible.builtin.stat:
+            path: "{{ cloud_image_path }}"
+          register: verify_cloud_image
+
+        - name: Assert cloud image exists
+          ansible.builtin.assert:
+            that:
+              - verify_cloud_image.stat.exists
+            fail_msg: "Cloud image gagal di-download."
+
+        # ---------- VM BUILD ----------
+
+        - name: Create base VM
+          ansible.builtin.command: >
+            qm create {{ vmid }}
+            --name {{ vm_name }}
+            --memory {{ memory }}
+            --cores {{ cores }}
+            --sockets 1
+            --cpu host
+            --net0 virtio,bridge={{ bridge }}{{ ',tag=' ~ vlan_tag if vlan_tag | int > 0 else '' }}
+            --ostype l26
+            --scsihw virtio-scsi-pci
+            --vga std
+            --agent enabled=0
+            --onboot {{ 1 if onboot else 0 }}
+          register: create_vm
+
+        - name: Import cloud image
+          ansible.builtin.command: >
+            qm importdisk {{ vmid }}
+            {{ cloud_image_path }}
+            {{ disk_storage }}
+          register: import_disk
+
+        - name: Attach imported disk
+          ansible.builtin.command: >
+            qm set {{ vmid }}
+            --scsi0 {{ disk_storage }}:vm-{{ vmid }}-disk-0
+
+        - name: Add cloud-init drive
+          ansible.builtin.command: >
+            qm set {{ vmid }}
+            --ide2 {{ disk_storage }}:cloudinit
+
+        - name: Configure boot order
+          ansible.builtin.command: >
+            qm set {{ vmid }}
+            --boot order=scsi0
+
+        - name: Resize disk
+          ansible.builtin.command: >
+            qm resize {{ vmid }}
+            scsi0
+            {{ disk_size_gb }}G
+
+        - name: Configure cloud-init
+          ansible.builtin.command: >
+            qm set {{ vmid }}
+            --ciuser {{ ci_user }}
+            --sshkeys {{ ci_ssh_pubkey_path }}
+            --ipconfig0 {{ ci_ipconfig }}
+            --nameserver {{ dns_server }}
+            --searchdomain {{ dns_searchdomain }}
+
+        - name: Configure cloud-init password
+          ansible.builtin.command:
+            cmd: >
+              qm set {{ vmid }}
+              --cipassword {{ ci_password }}
+          no_log: true
+          when:
+            - ci_password is defined
+            - ci_password | length > 0
+
+        - name: Start VM
+          ansible.builtin.command:
+            cmd: "qm start {{ vmid }}"
+          register: start_vm
+
+        # ---------- VERIFICATION ----------
+
+        - name: Wait for SSH
+          ansible.builtin.wait_for:
+            host: "{{ assigned_ip }}"
+            port: 22
+            state: started
+            delay: 10
+            timeout: 120
+
+        - name: Deployment completed
+          ansible.builtin.debug:
+            msg:
+              - "VM berhasil dibuat."
+              - "VMID : {{ vmid }}"
+              - "IP   : {{ assigned_ip }}"
+              - "SSH  : ssh {{ ci_user }}@{{ assigned_ip }}"
+
+      rescue:
+
+        - name: Cleanup failed VM
+          ansible.builtin.shell: |
+            qm stop {{ vmid }} --skiplock >/dev/null 2>&1 || true
+            qm destroy {{ vmid }} --purge >/dev/null 2>&1 || true
+          args:
+            executable: /bin/bash
+          ignore_errors: true
+
+        - name: Stop play
+          ansible.builtin.fail:
+            msg: "Gagal membuat template VM {{ vmid }}."
+
+      always:
+
+        - name: Finish deployment
+          ansible.builtin.debug:
+            msg: "Deployment playbook selesai."

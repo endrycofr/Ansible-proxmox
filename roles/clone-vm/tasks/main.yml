@@ -1,0 +1,131 @@
+---
+- name: Clone and Configure VM
+  block:
+
+    - name: Read SSH public key from Proxmox
+      ansible.builtin.command:
+        cmd: "cat {{ ci_ssh_pubkey_path }}"
+      register: ssh_pubkey
+      changed_when: false
+
+    - name: Clone VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+
+        node: "{{ node }}"
+        clone: "{{ template_name }}"
+
+        newid: "{{ vm.vmid }}"
+        name: "{{ vm.name }}"
+
+        full: true
+        timeout: 600
+        state: present
+
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Configure VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+
+        node: "{{ node }}"
+        vmid: "{{ vm.vmid }}"
+
+        memory: "{{ memory }}"
+        cores: "{{ cores }}"
+
+        ciuser: "{{ ci_user }}"
+        cipassword: "{{ ci_password }}"
+        sshkeys: "{{ ssh_pubkey.stdout }}"
+
+        ipconfig:
+          ipconfig0: "ip={{ vm.ip }}/{{ netmask_cidr }},gw={{ gateway_ip }}"
+
+        nameservers: "{{ dns_server }}"
+
+        update: true
+        state: present
+
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Start VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+
+        node: "{{ node }}"
+        vmid: "{{ vm.vmid }}"
+
+        state: started
+
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Wait until SSH is ready
+      ansible.builtin.wait_for:
+        host: "{{ vm.ip }}"
+        port: 22
+        delay: 5
+        timeout: 300
+
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm
+
+    - name: Add VM to runtime inventory
+      ansible.builtin.add_host:
+        name: "{{ vm.name }}"
+        groups: deployed
+
+        ansible_host: "{{ vm.ip }}"
+        ansible_user: "{{ ci_user }}"
+        ansible_password: "{{ ci_password }}"
+        ansible_become: true
+        ansible_python_interpreter: /usr/bin/python3
+
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm
+
+  rescue:
+
+    - name: Destroy cloned VM if failed
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+
+        node: "{{ node }}"
+        vmid: "{{ vm.vmid }}"
+
+        state: absent
+        purge: true
+
+      loop: "{{ vm_list }}"
+      loop_control:
+        loop_var: vm
+      ignore_errors: true
+
+    - name: Fail play
+      ansible.builtin.fail:
+        msg: "Clone VM gagal. Semua VM hasil clone telah dihapus."
+
+  always:
+
+    - name: Deployment finished
+      ansible.builtin.debug:
+        msg: "Clone VM playbook selesai."

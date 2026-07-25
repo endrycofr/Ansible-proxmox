@@ -1,0 +1,35 @@
+# ---
+# - name: Clone Cloud Init Template
+#   hosts: proxmox
+#   gather_facts: false
+
+#   pre_tasks:
+#     - name: Generate VM list
+#       ansible.builtin.set_fact:
+#         vm_list: >-
+#           {{
+#             vm_list | default([]) +
+#             [
+#               {
+#                 "vmid": vmid_start + item,
+#                 "name": vm_name_prefix ~ "-" ~ (item + 1),
+#                 "ip": subnet_base ~ "." ~ (ip_start_host + item)
+#               }
+#             ]
+#           }}
+#       loop: "{{ range(0, vm_count) | list }}"
+
+
+#     - name: Show VM List
+#       ansible.builtin.debug:
+#         var: vm_list
+#   roles:
+#     - clone-vm
+
+- name: Bootstrap Ubuntu VM
+  hosts: deployed
+  become: true
+  gather_facts: true
+
+  roles:
+    - bootstrap

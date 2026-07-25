@@ -1,0 +1,28 @@
+---
+- name: Convert VM to Template
+  hosts: proxmox
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: Stop VM
+      ansible.builtin.command:
+        cmd: "qm stop {{ template_vmid }}"
+      failed_when: false
+
+    - name: Wait until VM is stopped
+      ansible.builtin.command:
+        cmd: "qm status {{ template_vmid }}"
+      register: vm_status
+      retries: 20
+      delay: 3
+      until: "'stopped' in vm_status.stdout"
+
+    - name: Convert VM to Template
+      ansible.builtin.command:
+        cmd: "qm template {{ template_vmid }}"
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "VM {{ template_vmid }} berhasil dijadikan Template."

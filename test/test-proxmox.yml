@@ -1,0 +1,15 @@
+---
+- name: Test Proxmox API
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Get node info
+      community.general.proxmox_node_info:
+        api_host: "192.168.20.21"
+        api_user: "root@pam"
+        api_password: "UniversalQ1w2@"
+      register: result
+
+    - debug:
+        var: result
