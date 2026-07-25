@@ -71,3 +71,4 @@ ci_ssh_pubkey_path: /root/.ssh/id_ed25519.pub
 vm_count: 3
 vmid_start: 401
 vm_name_prefix: ubuntu
+ansible_user: root
