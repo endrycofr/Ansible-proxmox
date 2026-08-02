@@ -28,7 +28,7 @@ cloud_image_path: /var/lib/vz/template/iso/ubuntu-26.04-server-cloudimg-amd64.im
 # ==========================
 
 disk_storage: local-lvm
-disk_size_gb: 30
+disk_size_gb: 80
 
 # ==========================
 # VM
